@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>External Camera - PHOTOBOOTH ONLINE</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@400;600;700&display=swap" rel="stylesheet" />
+  <style>
+    body { font-family: 'Kanit', sans-serif; background: #020617; color: #f8fafc; }
+    @keyframes flashAnim { 0% { opacity: 1; } 100% { opacity: 0; } }
+    .camera-flash {
+      position: fixed; inset: 0; background: #ffffff; z-index: 50; pointer-events: none;
+      animation: flashAnim 0.45s ease-out forwards;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-center p-4">
+  <div class="w-full max-w-2xl bg-slate-900/90 border border-white/10 rounded-2xl p-4 md:p-6 space-y-4 shadow-2xl">
+    <div class="flex items-center justify-between gap-2">
+      <div>
+        <h1 class="text-lg font-bold text-sky-400">PHOTOBOOTH CAMERA</h1>
+        <p id="statusText" class="text-xs text-slate-400">กำลังเตรียมกล้อง...</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <button onclick="toggleFramePreview()" id="btnToggleFrame" class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs border border-white/10 hidden">
+          ซ่อน/แสดงกรอบ
+        </button>
+        <div class="text-xs bg-slate-800 px-3 py-1.5 rounded-xl border border-white/10">
+          ช็อตที่ <span id="shotNow" class="text-amber-400 font-bold">1</span> / <span id="shotTotal">1</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="relative aspect-[4/3] bg-black rounded-xl overflow-hidden flex items-center justify-center">
+      <video id="videoEl" autoplay playsinline muted class="w-full h-full object-cover -scale-x-100"></video>
+      <img id="frameOverlayEl" src="" alt="Frame Preview" class="hidden absolute inset-0 w-full h-full object-contain pointer-events-none opacity-60" crossorigin="anonymous" />
+      <canvas id="snapCanvas" class="hidden"></canvas>
+      <div id="countdownBox" class="hidden absolute inset-0 bg-black/60 flex items-center justify-center text-7xl font-extrabold text-amber-400">3</div>
+    </div>
+
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-2">
+        <button onclick="toggleMirror()" class="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs border border-white/10">กลับด้าน</button>
+        <button onclick="switchCamera()" class="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs border border-white/10">สลับกล้อง</button>
+      </div>
+      <button id="captureBtn" onclick="startSequence()" class="px-6 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white font-bold text-sm shadow disabled:opacity-50">
+        เริ่มถ่ายภาพ
+      </button>
+    </div>
+  </div>
+
+  <script>
+    let stream = null;
+    let mirrored = true;
+    let facingMode = 'user';
+    let totalShots = 1;
+    let delaySec = 3;
+    let currentShot = 0;
+    let showFrameOverlay = true;
+    let openerOrigin = '*';
+    let openerWin = null;
+
+    window.addEventListener('DOMContentLoaded', () => {
+      const params = new URLSearchParams(window.location.search);
+      totalShots = Math.max(1, parseInt(params.get('shots') || '1', 10));
+      delaySec = Math.max(1, parseInt(params.get('delay') || '3', 10));
+      const frameParam = params.get('frameUrl');
+      if (frameParam) {
+        applyFrameUrl(decodeURIComponent(frameParam));
+      }
+      document.getElementById('shotTotal').innerText = totalShots;
+      openerWin = window.opener || window.parent;
+      initCamera();
+    });
+
+    window.addEventListener('message', (event) => {
+      const data = event.data;
+      if (!data) return;
+      if (data.type === 'INIT_CAMERA') {
+        openerOrigin = event.origin || '*';
+        openerWin = event.source || openerWin;
+        if (data.shots) {
+          totalShots = Math.max(1, parseInt(data.shots, 10));
+          document.getElementById('shotTotal').innerText = totalShots;
+        }
+        if (data.delay) {
+          delaySec = Math.max(1, parseInt(data.delay, 10));
+        }
+        if (data.frameUrl) {
+          applyFrameUrl(data.frameUrl);
+        }
+      }
+    });
+
+    function applyFrameUrl(url) {
+      const img = document.getElementById('frameOverlayEl');
+      const btn = document.getElementById('btnToggleFrame');
+      if (url && /^https?:\/\//i.test(url)) {
+        img.src = url;
+        img.classList.toggle('hidden', !showFrameOverlay);
+        btn.classList.remove('hidden');
+      }
+    }
+
+    function toggleFramePreview() {
+      showFrameOverlay = !showFrameOverlay;
+      const img = document.getElementById('frameOverlayEl');
+      if (img.src) {
+        img.classList.toggle('hidden', !showFrameOverlay);
+      }
+    }
+
+    async function initCamera() {
+      try {
+        if (stream) {
+          stream.getTracks().forEach(t => t.stop());
+        }
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error('เบราว์เซอร์ไม่รองรับกล้องบนบริบทนี้');
+        }
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode, width: { ideal: 1280, max: 1920 }, height: { ideal: 720, max: 1080 } },
+          audio: false
+        });
+        document.getElementById('videoEl').srcObject = stream;
+        document.getElementById('statusText').innerText = 'กล้องพร้อมใช้งาน';
+      } catch (err) {
+        document.getElementById('statusText').innerText = 'เปิดกล้องไม่สำเร็จ: ' + (err.message || err.name);
+        alert('ไม่สามารถเปิดกล้องได้: ' + (err.message || err.name));
+      }
+    }
+
+    function toggleMirror() {
+      mirrored = !mirrored;
+      document.getElementById('videoEl').style.transform = mirrored ? 'scaleX(-1)' : 'scaleX(1)';
+    }
+
+    function switchCamera() {
+      facingMode = facingMode === 'user' ? 'environment' : 'user';
+      initCamera();
+    }
+
+    function startSequence() {
+      if (currentShot >= totalShots) return;
+      document.getElementById('captureBtn').disabled = true;
+      let count = delaySec;
+      const box = document.getElementById('countdownBox');
+      box.innerText = count;
+      box.classList.remove('hidden');
+
+      const iv = setInterval(() => {
+        count--;
+        if (count > 0) {
+          box.innerText = count;
+        } else {
+          clearInterval(iv);
+          box.classList.add('hidden');
+          snapPhoto();
+        }
+      }, 1000);
+    }
+
+    function snapPhoto() {
+      const flash = document.createElement('div');
+      flash.className = 'camera-flash';
+      document.body.appendChild(flash);
+      setTimeout(() => flash.remove(), 450);
+
+      const video = document.getElementById('videoEl');
+      const canvas = document.getElementById('snapCanvas');
+      canvas.width = video.videoWidth || 1280;
+      canvas.height = video.videoHeight || 720;
+      const ctx = canvas.getContext('2d');
+
+      if (mirrored) {
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL('image/png');
+
+      currentShot++;
+      const isComplete = currentShot >= totalShots;
+
+      if (openerWin && openerWin !== window) {
+        openerWin.postMessage({
+          type: 'PHOTOBOOTH_PHOTO_CAPTURED',
+          image: dataUrl,
+          shotIndex: currentShot,
+          totalShots,
+          isComplete
+        }, openerOrigin);
+      }
+
+      if (!isComplete) {
+        document.getElementById('shotNow').innerText = currentShot + 1;
+        setTimeout(startSequence, 1000);
+      } else {
+        document.getElementById('statusText').innerText = 'ถ่ายครบทุกช็อตแล้ว กำลังกลับไปหน้าตกแต่ง...';
+        setTimeout(() => window.close(), 800);
+      }
+    }
+
+    window.addEventListener('beforeunload', () => {
+      if (stream) stream.getTracks().forEach(t => t.stop());
+    });
+  </script>
+</body>
+</html>
